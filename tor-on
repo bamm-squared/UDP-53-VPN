@@ -1,37 +1,51 @@
-sudo tee /usr/local/sbin/tor-on >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 SUBNET="10.8.0.0/24"
-IN_TUN="tun0"
-OUT_TUN="tun2"
+IN_TUN="tun0"      # OpenVPN server interface for your clients
+OUT_TUN="tun2"     # Provider OpenVPN client interface (will be stopped)
 TAB=201
 MARK=0x1
 
+# Make sure we're using the nftables backend
 update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null 2>&1 || true
 
 echo "[tor-on] Stopping other exits (provider OpenVPN / WireGuard)…"
 systemctl stop openvpn-client@provider 2>/dev/null || true
 wg-quick down wg0 2>/dev/null || true
 
+# Undo policy routing from vpn-on ---
 echo "[tor-on] Clearing policy routing for ${SUBNET}…"
 ip rule del from "${SUBNET}" table "${TAB}" 2>/dev/null || true
 ip rule del fwmark "${MARK}" table "${TAB}" 2>/dev/null || true
 ip route flush table "${TAB}" 2>/dev/null || true
 
+# Clean NAT that vpn-on may have installed ---
+# We only need Tor REDIRECTs; no SNAT/MASQUERADE for client traffic here.
 echo "[tor-on] Flushing NAT hooks that could conflict with Tor…"
 iptables-nft -t nat -F POSTROUTING
 iptables-nft -t nat -F PREROUTING
 
+# Remove mangle marks set by vpn-on ---
 while iptables-nft -t mangle -D PREROUTING -i "${IN_TUN}" -j MARK --set-mark "${MARK}" 2>/dev/null; do :; done
+
+# Drop any permissive FORWARD rules between tun0 and tun2 (not needed for Tor) ---
 while iptables-nft -D FORWARD -i "${IN_TUN}" -o "${OUT_TUN}" -s "${SUBNET}" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null; do :; done
 while iptables-nft -D FORWARD -i "${OUT_TUN}" -o "${IN_TUN}" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
 
+# Optionally block all non-DNS UDP from clients to prevent leaks over plain UDP
+# (Tor doesn't carry UDP).  Uncomment if you want a hard block:
+iptables-nft -C FORWARD -i "${IN_TUN}" -p udp ! --dport 53 -j DROP 2>/dev/null || \
+iptables-nft -I FORWARD 1 -i "${IN_TUN}" -p udp ! --dport 53 -j DROP
+
+# Tor transparent proxy DNAT/REDIRECTs (authoritative) ---
+# Reinstall only what Tor needs, in order.
 echo "[tor-on] Installing Tor transparent proxy rules…"
 iptables-nft -t nat -A PREROUTING -i "${IN_TUN}" -p udp --dport 53 -j REDIRECT --to-ports 5353
 iptables-nft -t nat -A PREROUTING -i "${IN_TUN}" -p tcp --dport 53 -j REDIRECT --to-ports 5353
 iptables-nft -t nat -A PREROUTING -i "${IN_TUN}" -p tcp --syn       -j REDIRECT --to-ports 9040
 
+# Kernel knobs safe for Tor mode (rp_filter loose, forwarding ok) ---
 sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf.${IN_TUN}.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null || true
@@ -39,6 +53,7 @@ sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null || true
 echo "[tor-on] Starting Tor client…"
 systemctl restart tor@default
 
+# Wait for Tor listener ports
 for p in 9040 5353; do
   for i in {1..20}; do
     if ss -ltnup 2>/dev/null | grep -q ":${p} "; then break; fi
@@ -49,5 +64,3 @@ done
 echo " Tor-mode active (Client -> Tor exit)."
 echo "  - NAT PREROUTING REDIRECT: tcp* -> 9040, DNS -> 5353"
 echo "  - Policy routing & tun2 SNAT cleared."
-EOF
-sudo chmod +x /usr/local/sbin/tor-on
