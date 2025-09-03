@@ -6,19 +6,18 @@ This walks thru a fresh Ubuntu Server to a setup where your OpenVPN server (clie
 Both scripts are idempotent and clean up the other mode before enabling their own.
 
 ## 0) System prep
-'''
+```
 sudo apt update
 sudo apt install -y openvpn easy-rsa tor obfs4proxy iptables conntrack iproute2 curl jq
 # (Optional but handy)
 sudo apt install -y resolvconf
-'''
+```
 Use nftables backend for iptables (Ubuntu default, but make sure):
-'''
+```
 sudo update-alternatives --set iptables /usr/sbin/iptables-nft || true
-'''
-
+```
 Kernel sysctls (routing-friendly defaults):
-
+```
 sudo tee /etc/sysctl.d/99-vpn-toggle.conf >/dev/null <<'EOF'
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.rp_filter=2
@@ -27,8 +26,8 @@ net.ipv4.conf.all.src_valid_mark=1
 net.ipv4.tcp_mtu_probing=1
 EOF
 sudo sysctl --system
-
-1) Free UDP/53 for OpenVPN server (if you want the server on UDP/53)
+```
+## 1) Free UDP/53 for OpenVPN server (if you want the server on UDP/53)
 
 systemd-resolved binds a stub listener on 127.0.0.53 which can conflict.
 
