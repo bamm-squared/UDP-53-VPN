@@ -8,11 +8,11 @@ Commercial OpenVPN provider (vpn-on, creates tun2)
 
 Both scripts are idempotent and clean up the other mode before enabling their own.
 
-##0) System prep
+## 0) System prep
 <code>
 sudo apt update
 sudo apt install -y openvpn easy-rsa tor obfs4proxy iptables conntrack iproute2 curl jq
-# (Optional but handy)
+/# (Optional but handy)
 sudo apt install -y resolvconf</code>
 
 Use nftables backend for iptables (Ubuntu default, but make sure):
