@@ -1,24 +1,21 @@
 # UDP-53-VPN
 
-This README walks you from a fresh Ubuntu Server to a setup where your OpenVPN server (clients on tun0) can toggle its exit between:
-
-Tor transparent proxy (tor-on)
-
-Commercial OpenVPN provider (vpn-on, creates tun2)
-
+This walks thru a fresh Ubuntu Server to a setup where your OpenVPN server (clients on tun0) can toggle its exit between:
+- Tor transparent proxy (tor-on)
+- Commercial OpenVPN provider (vpn-on, creates tun2)
 Both scripts are idempotent and clean up the other mode before enabling their own.
 
 ## 0) System prep
-<code>
+'''
 sudo apt update
 sudo apt install -y openvpn easy-rsa tor obfs4proxy iptables conntrack iproute2 curl jq
-\# (Optional but handy)
-sudo apt install -y resolvconf</code>
-
+# (Optional but handy)
+sudo apt install -y resolvconf
+'''
 Use nftables backend for iptables (Ubuntu default, but make sure):
-<code>
-sudo update-alternatives --set iptables /usr/sbin/iptables-nft || true</code>
-
+'''
+sudo update-alternatives --set iptables /usr/sbin/iptables-nft || true
+'''
 
 Kernel sysctls (routing-friendly defaults):
 
