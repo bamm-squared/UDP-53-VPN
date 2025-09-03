@@ -12,7 +12,7 @@ Both scripts are idempotent and clean up the other mode before enabling their ow
 <code>
 sudo apt update
 sudo apt install -y openvpn easy-rsa tor obfs4proxy iptables conntrack iproute2 curl jq
-/# (Optional but handy)
+\# (Optional but handy)
 sudo apt install -y resolvconf</code>
 
 Use nftables backend for iptables (Ubuntu default, but make sure):
