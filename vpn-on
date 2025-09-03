@@ -1,4 +1,3 @@
-sudo tee /usr/local/sbin/vpn-on >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -8,22 +7,24 @@ OUT_TUN="tun2"        # provider OpenVPN client iface
 TAB=201
 MARK=0x1
 
+# Make sure we use iptables-nft backend; ignore if already set
 update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null 2>&1 || true
 
-# 1) Disable Tor transparent mode
+# Disable Tor mode completely (service + NAT hooks)
 systemctl stop tor@default 2>/dev/null || true
+# Remove Tor transparent proxying rules if present
 for r in \
  "-D PREROUTING -i ${IN_TUN} -p udp --dport 53  -j REDIRECT --to-ports 5353" \
  "-D PREROUTING -i ${IN_TUN} -p tcp --syn       -j REDIRECT --to-ports 9040" \
  "-D PREROUTING -i ${IN_TUN} -p tcp --dport 53  -j REDIRECT --to-ports 5353"
 do iptables-nft -t nat $r 2>/dev/null || true; done
 
-# 2) Start provider tunnel & wait for tun2
+# Start provider tunnel & wait for ${OUT_TUN}
 systemctl restart openvpn-client@provider
 for i in {1..25}; do ip link show "$OUT_TUN" &>/dev/null && ok=1 && break; sleep 1; done
 [ -n "${ok:-}" ] || { echo "✗ $OUT_TUN missing"; journalctl -u openvpn-client@provider -n 80 --no-pager >&2; exit 1; }
 
-# 3) Learn tun2 IP and in-tunnel gateway/DNS
+# Learn tun2 IP and in-tunnel gateway/DNS
 IPCIDR="$(ip -4 addr show "$OUT_TUN" | awk '($1=="inet"){print $2; exit}')"
 TUNIP="${IPCIDR%%/*}"
 PEER_GW="$(ip -4 addr show "$OUT_TUN" | awk '($1=="inet"){for(i=1;i<=NF;i++){if($i=="peer"){print $(i+1); exit}}}')"
@@ -32,14 +33,14 @@ if [ -z "${PEER_GW:-}" ] && [ -n "${TUNIP:-}" ]; then
 fi
 DNS_TGT="${PEER_GW:-}"
 
-# 4) Kernel knobs
+# Kernel knobs (routing-friendly)
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv4.conf.all.rp_filter=2 net.ipv4.conf.default.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf.${IN_TUN}.rp_filter=2 net.ipv4.conf.${OUT_TUN}.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null
 sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null
 
-# 5) Policy routing via tun2 (table 201)
+# Policy routing: send client subnet via tun2 (table 201) + fwmark path
 ip route flush table "$TAB" 2>/dev/null || true
 if [ -n "${PEER_GW:-}" ]; then
   ip route replace default via "$PEER_GW" dev "$OUT_TUN" table "$TAB"
@@ -50,10 +51,12 @@ ip rule del from "$SUBNET" table "$TAB" 2>/dev/null || true
 ip rule add from "$SUBNET" table "$TAB"
 ip rule add fwmark "$MARK" table "$TAB" priority 10010 2>/dev/null || true
 
+# Mark all traffic arriving from VPN clients
 iptables-nft -t mangle -C PREROUTING -i "$IN_TUN" -j MARK --set-mark "$MARK" 2>/dev/null || \
 iptables-nft -t mangle -A PREROUTING -i "$IN_TUN" -j MARK --set-mark "$MARK"
 
-# 6) Filter path & MSS clamp; remove accidental tun0<->ens3 accepts
+# Filter path: allow tun0→tun2 & established back; clamp MSS to PMTU
+# remove any accidental WAN path
 while iptables-nft -D FORWARD -i "$IN_TUN" -o ens3 -j ACCEPT 2>/dev/null; do :; done
 while iptables-nft -D FORWARD -i ens3 -o "$IN_TUN" -j ACCEPT 2>/dev/null; do :; done
 iptables-nft -C FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
@@ -62,13 +65,18 @@ iptables-nft -C FORWARD -i "$IN_TUN" -o "$OUT_TUN" -s "$SUBNET" -m conntrack --c
 iptables-nft -I FORWARD 2 -i "$IN_TUN" -o "$OUT_TUN" -s "$SUBNET" -m conntrack --ctstate NEW -j ACCEPT
 iptables-nft -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -s "$SUBNET" -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
 iptables-nft -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -s "$SUBNET" -j TCPMSS --clamp-mss-to-pmtu
+# allow QUIC (no forced drop) — you can add a DROP if you want to force TCP
 
-# 7) NAT: remove conflicts, then add ONE authoritative SNAT + DNS DNATs
+# NAT: remove conflicts, then install exactly ONE SNAT and the DNS DNATs
+# kill any old conflicting NAT (esp. ens3 MASQUERADE or stale tun2 SNATs)
 while iptables-nft -t nat -D POSTROUTING -o ens3 -s "$SUBNET" -j MASQUERADE 2>/dev/null; do :; done
 while iptables-nft -t nat -D POSTROUTING -o "$OUT_TUN" -s "$SUBNET" -j MASQUERADE 2>/dev/null; do :; done
 while iptables-nft -t nat -D POSTROUTING -o "$OUT_TUN" -s "$SUBNET" -j SNAT --to-source "$TUNIP" 2>/dev/null; do :; done
+# add our single authoritative SNAT at the very top
 iptables-nft -t nat -I POSTROUTING 1 -o "$OUT_TUN" -s "$SUBNET" -j SNAT --to-source "$TUNIP"
 
+# DNS to provider in-tunnel resolver
+# remove any previous DNATs we might have set (both common targets)
 for tgt in "$DNS_TGT" "10.96.0.1"; do
   iptables-nft -t nat -D PREROUTING -i "$IN_TUN" -p udp --dport 53 -j DNAT --to-destination ${tgt}:53 2>/dev/null || true
   iptables-nft -t nat -D PREROUTING -i "$IN_TUN" -p tcp --dport 53 -j DNAT --to-destination ${tgt}:53 2>/dev/null || true
@@ -76,10 +84,8 @@ done
 iptables-nft -t nat -I PREROUTING 1 -i "$IN_TUN" -p udp --dport 53 -j DNAT --to-destination ${DNS_TGT}:53
 iptables-nft -t nat -I PREROUTING 2 -i "$IN_TUN" -p tcp --dport 53 -j DNAT --to-destination ${DNS_TGT}:53
 
-# 8) Clear stale conntrack for client subnet
+# Clear stale conntrack for the client subnet
 conntrack -D -s "$SUBNET" 2>/dev/null || true
 
-echo -e "\e[36m🚀 vpn-mode active (Client → provider OpenVPN exit)\e[0m"
+echo -e " VPN-mode active (Client → provider OpenVPN exit)"
 echo "tun2: $TUNIP  |  GW/DNS: ${DNS_TGT}  |  table ${TAB}: default via ${PEER_GW:-$OUT_TUN}"
-EOF
-sudo chmod +x /usr/local/sbin/vpn-on
