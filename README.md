@@ -30,19 +30,19 @@ sudo sysctl --system
 ## 1) Free UDP/53 for OpenVPN server (if you want the server on UDP/53)
 
 systemd-resolved binds a stub listener on 127.0.0.53 which can conflict.
-
+```
 echo -e "[Resolve]\nDNSStubListener=no" | sudo tee /etc/systemd/resolved.conf
 sudo systemctl restart systemd-resolved
 # Ensure /etc/resolv.conf points to real upstream DNS (e.g., Cloudflare + Quad9):
 echo -e "nameserver 1.1.1.1\nnameserver 9.9.9.9" | sudo tee /etc/resolv.conf
-
-
+```
 Verify port 53 is free (only OpenVPN should take it later):
-
+```
 sudo ss -lunp | grep ':53 ' || echo "53/udp free"
-
-2) OpenVPN server (your clients connect here → tun0)
-2.1 Create PKI with Easy-RSA (quick start)
+```
+## 2) OpenVPN server (your clients connect here → tun0)
+### 2.1 Create PKI with Easy-RSA (quick start)
+```
 make-cadir ~/easyrsa
 cd ~/easyrsa
 ./easyrsa init-pki
@@ -51,8 +51,9 @@ cd ~/easyrsa
 ./easyrsa gen-dh
 sudo mkdir -p /etc/openvpn/server
 sudo cp pki/ca.crt pki/private/server.key pki/issued/server.crt pki/dh.pem /etc/openvpn/server/
-
-2.2 Minimal /etc/openvpn/server/server.conf
+```
+### 2.2 Minimal /etc/openvpn/server/server.conf
+```
 sudo tee /etc/openvpn/server/server.conf >/dev/null <<'EOF'
 port 53
 proto udp
@@ -83,8 +84,7 @@ tls-version-min 1.2
 # Silence
 verb 3
 EOF
-
-
+```
 Enable & start:
 
 sudo systemctl enable --now openvpn-server@server
