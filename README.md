@@ -86,18 +86,18 @@ verb 3
 EOF
 ```
 Enable & start:
-
+```
 sudo systemctl enable --now openvpn-server@server
 sudo systemctl status openvpn-server@server --no-pager
-
-
+```
 You should see it listening on 0.0.0.0:53/udp and tun0 created:
-
+```
 sudo ss -lunp | egrep 'openvpn|:53 '
 ip -brief addr show tun0
-
-3) Tor (transparent proxy mode)
-3.1 /etc/tor/torrc (no deprecated options)
+```
+## 3) Tor (transparent proxy mode)
+### 3.1 /etc/tor/torrc (no deprecated options)
+```
 sudo tee /etc/tor/torrc >/dev/null <<'EOF'
 Log notice syslog
 ClientOnly 1
@@ -112,38 +112,33 @@ VirtualAddrNetworkIPv4 10.192.0.0/10
 # ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy
 # Bridge obfs4 <IP:PORT> <FINGERPRINT> cert=<...> iat-mode=0
 EOF
-
-
+```
 Start:
-
+```
 sudo systemctl enable --now tor@default
 sudo ss -ltnup | egrep ':(9040|9050|5353)\s'
-
-4) Commercial OpenVPN provider (exit tunnel → tun2)
-
+```
+## 4) Commercial OpenVPN provider (exit tunnel → tun2)
 Create the directory & drop your provider’s .ovpn:
-
+```
 sudo mkdir -p /etc/openvpn/provider
 sudo cp ~/Downloads/provider.ovpn /etc/openvpn/provider/provider.ovpn
-
-
+```
 Edit the config to pin the device name and creds file:
-
+```
 # Remove any existing "dev" or "auth-user-pass" lines first, then add:
 sudo sed -i '/^dev /d;/^auth-user-pass/d' /etc/openvpn/provider/provider.ovpn
 printf 'dev tun2\nauth-user-pass /etc/openvpn/provider/creds\n' | sudo tee -a /etc/openvpn/provider/provider.ovpn
-
-
+```
 Create credentials (use your provider’s OpenVPN username/password):
-
+```
 sudo install -m 600 -o root -g root /dev/stdin /etc/openvpn/provider/creds <<'EOF'
 <USERNAME>
 <PASSWORD>
 EOF
-
-
+```
 Systemd unit /etc/systemd/system/openvpn-client@provider.service:
-
+```
 sudo tee /etc/systemd/system/openvpn-client@provider.service >/dev/null <<'EOF'
 [Unit]
 Description=Commercial VPN client (%i)
@@ -159,60 +154,49 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
-
-
+```
 Reload systemd:
-
+```
 sudo systemctl daemon-reload
-
-
+```
 You do not start this manually; vpn-on will do it and verify tun2.
-
-5) Use it
-
+## 5) Use it
 Tor exit:
-
+```
 sudo /usr/local/sbin/tor-on
-ss -ltnup | egrep ':(9040|5353)\s'    # Tor listeners up
-
-
+ss -ltnup | egrep ':(9040|5353)\s'    # Tor listeners up (OPTIONAL - Troubleshooting)
+```
 Provider exit:
-
+```
 sudo /usr/local/sbin/vpn-on
-ip -o link show tun2                  # should exist
-ip rule | grep 10.8.0.0/24            # points to table 201
-ip route show table 201               # default via tun2/peer
-sudo iptables-nft -t nat -L POSTROUTING -v -n | head -20   # top SNAT to tun2 IP growing
-
-
+ip -o link show tun2                  # should exist (OPTIONAL - Troubleshooting)
+ip rule | grep 10.8.0.0/24            # points to table 201 (OPTIONAL - Troubleshooting)
+ip route show table 201               # default via tun2/peer (OPTIONAL - Troubleshooting)
+sudo iptables-nft -t nat -L POSTROUTING -v -n | head -20   # top SNAT to tun2 IP growing (OPTIONAL - Troubleshooting)
+```
 From a VPN client (behind tun0):
-
+```
 ping -c1 1.1.1.1
-
 curl -4 https://ifconfig.co
-
+```
 Browse normally.
-
-6) Quick Troubleshooting
-
+## 6) Quick Troubleshooting
 RSTs to 10.8.0.x on tun2 tcpdump → SNAT missing/overridden.
 Fix: ensure only one NAT rule:
-
+```
 sudo iptables-nft -t nat -L POSTROUTING -v -n
 # Keep only: SNAT -o tun2 -s 10.8.0.0/24 to <tun2-IP> at top.
-
-
+```
 No tun2 → provider auth or .ovpn broken.
 Check:
-
+```
 sudo journalctl -u openvpn-client@provider -e --no-pager | tail -80
-
-
+```
 Port 53 conflict when starting server → redo step 1 (free stub listener), then:
-
+```
 sudo systemctl restart openvpn-server@server
-
-
+```
 Still weird? Clear stale conntrack:
-
+```
 sudo conntrack -D -s 10.8.0.0/24 || true
+```
